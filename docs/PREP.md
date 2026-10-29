@@ -1,4 +1,4 @@
-# Monopoly (Xbox 360) PC port
+﻿# Monopoly (Xbox 360) PC port
 
 Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, built on the ReXGlue SDK, with online play for up to 4 players.
 
@@ -15,6 +15,11 @@ Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, bui
   - Games on the local network are found automatically (UDP discovery on 27360). Internet joins use a join code (the host's IPv4 and port in 10 base-32 characters).
   - The launcher can open the host's router port through UPnP, using its own SSDP/SOAP client.
   - Public games are listed through a shared lobby directory server (`server/lobby_directory.py`), which also checks whether each host can be reached from the internet.
+
+## Release
+
+- v1.0.0: `tools\package.ps1 -Zip` writes `dist\MonopolyRecompiled.zip` (14 MB: launcher, game, join client, shader cache, lobby server, LICENSE, THIRD_PARTY_NOTICES.txt; no game data). The launcher installs the game from the player's own .iso (title ID checked, files written under a temporary name first).
+- Repo: github.com/josiahg2502-glitch/MonopolyRecompiled (GPL-3.0, like the other ports).
 
 ## Layout
 

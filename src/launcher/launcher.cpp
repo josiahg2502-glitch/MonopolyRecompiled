@@ -31,6 +31,7 @@
 #include "netplay/lobby.h"
 #include "netplay/wire.h"
 #include "directory.h"
+#include "install.h"
 #include "upnp.h"
 
 // The public lobby directory launchers use unless the player picks another in Settings
@@ -301,6 +302,27 @@ std::vector<std::string> LanAddresses() {
   return routed.empty() ? out : routed;
 }
 
+std::optional<fs::path> PickDiscImage(HWND owner) {
+  IFileOpenDialog* dialog = nullptr;
+  if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
+    return std::nullopt;
+  std::optional<fs::path> result;
+  COMDLG_FILTERSPEC types[] = {{L"Xbox 360 disc image (*.iso)", L"*.iso"}, {L"All files", L"*.*"}};
+  dialog->SetFileTypes(2, types);
+  dialog->SetTitle(L"Choose your Monopoly (Xbox 360) disc image");
+  IShellItem* item = nullptr;
+  if (SUCCEEDED(dialog->Show(owner)) && SUCCEEDED(dialog->GetResult(&item))) {
+    PWSTR path = nullptr;
+    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+      result = fs::path(path);
+      CoTaskMemFree(path);
+    }
+    item->Release();
+  }
+  dialog->Release();
+  return result;
+}
+
 std::optional<std::string> PickFolder(HWND owner) {
   IFileOpenDialog* dialog = nullptr;
   if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog))))
@@ -484,6 +506,38 @@ struct Launcher {
   // since ImGui navigation only moves sideways between items on the same row.
   bool focus_page = false;
 
+  // Installing from a disc image, into the "game" folder next to the launcher.
+  std::shared_ptr<InstallProgress> install;
+
+  void StartInstall() {
+    auto image = PickDiscImage(hwnd);
+    if (!image) return;
+    install = std::make_shared<InstallProgress>();
+    std::thread([p = install, image = *image] { InstallFromDiscImage(image, ExeDir() / "game", *p); }).detach();
+  }
+
+  void InstallStatus() {
+    if (install->finished) {
+      std::string error = [&] {
+        std::lock_guard lock(install->mutex);
+        return install->error;
+      }();
+      if (error.empty()) settings.game_folder.clear(), Save(), Notice("Game installed. Have fun!", false);
+      else Notice(error, true);
+      install.reset();
+      missing_checked = -10;
+      return;
+    }
+    double total = double(install->total), done = double(install->done);
+    std::string file = install->File();
+    char label[64];
+    snprintf(label, sizeof(label), "%.0f%%", total > 0 ? 100 * done / total : 0.0);
+    ImGui::TextUnformatted(file.empty() ? "Reading the disc image..." : ("Installing " + file + "...").c_str());
+    ImGui::ProgressBar(total > 0 ? float(done / total) : 0.0f, ImVec2(-110 * S, 0), label);
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(-FLT_MIN, 0))) install->cancel = true;
+  }
+
   bool InLobby() const { return lobby_host || lobby_client; }
   ListingInfo ListingFor(const netplay::LobbyState& st, bool in_game = false) const {
     ListingInfo info;
@@ -627,6 +681,7 @@ void ApplyStyle(float S) {
   c[ImGuiCol_TabHovered] = ImVec4(1, 1, 1, 1);
   c[ImGuiCol_TabSelected] = ImVec4(1, 1, 1, 0.75f);
   c[ImGuiCol_TabSelectedOverline] = kRed;
+  c[ImGuiCol_PlotHistogram] = kGreen;  // progress bars
 }
 
 void Launcher::Heading(const char* text, const char* subtitle) {
@@ -686,18 +741,16 @@ void Launcher::GameFilesWarning() {
   ImGui::TextUnformatted("Game files not found");
   ImGui::PopFont();
   ImGui::PopStyleColor();
-  std::string list;
-  for (auto& f : missing) list += (list.empty() ? "" : ", ") + f;
-  ImGui::TextWrapped("Copy the files from your own Monopoly (Xbox 360) disc into\n%s\nMissing: %s",
-                     Utf8(GameDir(settings).wstring()).c_str(), list.c_str());
-  if (ImGui::Button("Choose folder...")) {
-    if (auto dir = PickFolder(hwnd)) settings.game_folder = *dir, missing_checked = -10, Save();
-  }
-  ImGui::SameLine();
-  if (ImGui::Button("Open game folder")) {
-    std::error_code ec;
-    fs::create_directories(GameDir(settings), ec);
-    ShellExecuteW(hwnd, L"open", GameDir(settings).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  if (install) {
+    InstallStatus();
+  } else {
+    ImGui::TextWrapped("Install the game from your own Monopoly (Xbox 360) disc image (.iso), or choose a folder "
+                       "that already has its files (default.xex and the .big files).");
+    if (ImGui::Button("Install from disc image...")) StartInstall();
+    ImGui::SameLine();
+    if (ImGui::Button("Choose folder...")) {
+      if (auto dir = PickFolder(hwnd)) settings.game_folder = *dir, missing_checked = -10, Save();
+    }
   }
   ImGui::EndChild();
   ImGui::PopStyleVar(2);
@@ -1037,12 +1090,18 @@ void Launcher::PageSettings() {
     ImGui::TextUnformatted("Some game files are missing.");
     ImGui::PopStyleColor();
   }
-  if (ImGui::Button("Choose folder...")) {
-    if (auto dir = PickFolder(hwnd)) settings.game_folder = *dir, missing_checked = -10, Save();
-  }
-  if (!settings.game_folder.empty()) {
+  if (install) {
+    InstallStatus();
+  } else {
+    if (ImGui::Button("Install from disc image...")) StartInstall();
     ImGui::SameLine();
-    if (ImGui::Button("Use the game folder next to the launcher")) settings.game_folder.clear(), missing_checked = -10, Save();
+    if (ImGui::Button("Choose folder...")) {
+      if (auto dir = PickFolder(hwnd)) settings.game_folder = *dir, missing_checked = -10, Save();
+    }
+    if (!settings.game_folder.empty()) {
+      ImGui::SameLine();
+      if (ImGui::Button("Use the game folder next to the launcher")) settings.game_folder.clear(), missing_checked = -10, Save();
+    }
   }
 
   ImGui::Dummy(ImVec2(0, 10 * S));
@@ -1233,6 +1292,7 @@ void Launcher::Sidebar() {
   ImGui::Dummy(ImVec2(0, 2 * S));
   centered("MONOPOLY", bold, 30, ImVec4(1, 1, 1, 1));
   centered("Xbox 360 edition for PC", regular, 15, ImVec4(1, 0.88f, 0.86f, 1));
+  centered("v" MONOPOLY_VERSION, regular, 13, ImVec4(1, 0.78f, 0.76f, 1));
   ImGui::Dummy(ImVec2(0, 18 * S));
 
   static const char* kPages[] = {"Play", "Host online", "Join online", "Settings"};
@@ -1421,6 +1481,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
   }
 
   app.LeaveLobby();
+  if (app.install) {  // closing mid-install: stop, and let it remove its partial file
+    app.install->cancel = true;
+    for (int i = 0; i < 100 && !app.install->finished; ++i) Sleep(50);
+  }
   for (int i = 0; i < 200 && (g_router_jobs || PendingListings()); ++i) Sleep(50);  // let the router and lobby server forget us
   if (app.art) app.art->Release();
   ImGui_ImplDX9_Shutdown();

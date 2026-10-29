@@ -1,6 +1,8 @@
 # Repeats tools/find_missing_funcs.py (merging into config/monopoly.toml) + codegen until nothing new turns up.
+# -Image: default.xex's decrypted, decompressed PE image (the basefile the recompiler works from).
+param([Parameter(Mandatory)][string]$Image)
 $port = 'N:\Projects\Monopoly\port'
-$image = 'C:\Users\josia\AppData\Local\Temp\claude\C--Users-josia--claude-spares-spare-8bbi8D\532973a4-802e-4c95-a5b2-e6509f8f8fe5\scratchpad\image.bin'
+$image = $Image
 for ($pass = 1; $pass -le 8; $pass++) {
   python -I N:\Projects\Monopoly\tools\find_missing_funcs.py $image "$port\generated\default\monopoly_init.cpp" "$port\config\monopoly.toml"
   $changed = $LASTEXITCODE -eq 2
