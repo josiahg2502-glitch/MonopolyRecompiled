@@ -1,0 +1,6 @@
+# Boot -> past the title screen -> main menu, then step through a few menu screens.
+20000 A
+24000 A
+27000 DOWN
+29000 A
+33000 B

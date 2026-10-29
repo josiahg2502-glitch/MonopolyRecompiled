@@ -1,0 +1,12 @@
+# Upstream SDK clone (pinned commit + patches/ are documented in docs/PREP.md)
+/rexglue-sdk/
+# Codegen output and build trees
+/port/generated/
+/port/out/
+/build/
+/dist/
+# Local test saves and game files
+/userdata/
+*.xex
+*.big
+*.iso

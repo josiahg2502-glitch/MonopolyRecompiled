@@ -1,0 +1,7 @@
+﻿     7262208  /$SystemUpdate/su20076000_00000000
+   623586240  /data.big
+     7450624  /default.xex
+  1168349184  /movies.big
+    71128616  /movies2.big
+    72847360  /music.big
+6 files, 1860 MiB, partition 0xFD90000

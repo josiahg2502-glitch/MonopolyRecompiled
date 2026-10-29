@@ -1,0 +1,101 @@
+﻿# Codegen settings for default.xex, included from monopoly_manifest.toml.
+
+# `this`-adjust thunks (addi r3,r3,4; b target) in .pdata gaps, reached only by tail calls.
+[functions]
+0x82403AF8 = { size = 8 }
+0x82406F60 = { size = 8 }
+# Leaf wide-char class check missing from .pdata; analysis split it at 0x82243650.
+0x82243608 = { end = 0x82243690 }
+
+# Vtable/callback targets codegen folded into neighbours (tools/find_missing_funcs.py).
+0x821E5D00 = { end = 0x821E5D20 }  # referenced from 0x821A772C
+0x821E5E98 = { end = 0x821E5EB8 }  # referenced from 0x821A7754
+0x821E5ED8 = { end = 0x821E5EF8 }  # referenced from 0x821A775C
+0x821E5F70 = { end = 0x821E5F90 }  # referenced from 0x821A7778
+0x821E5F90 = { end = 0x821E5FB0 }  # referenced from 0x821A777C
+0x821E62C0 = { end = 0x821E62C8 }  # referenced from 0x821A7680
+0x821E62E8 = { end = 0x821E62F0 }  # referenced from 0x821A7688
+0x821E6310 = { end = 0x821E6330 }  # referenced from 0x821A7690
+0x821E6350 = { end = 0x821E6358 }  # referenced from 0x821A7698
+0x821E6378 = { end = 0x821E6398 }  # referenced from 0x821A76A0
+0x821E63B8 = { end = 0x821E63C0 }  # referenced from 0x821A76A8
+0x821E63E0 = { end = 0x821E6400 }  # referenced from 0x821A76B0
+0x821E8D00 = { end = 0x821E8D08 }  # referenced from 0x821A880C
+0x8220BFE0 = { end = 0x8220C0F8 }  # referenced from 0x821AB25C
+0x82231A50 = { end = 0x82231A58 }  # referenced from 0x821ADAF0
+0x82234DC0 = { end = 0x82234E00 }  # referenced from 0x826E0C40
+0x8227EE98 = { end = 0x8227EEC0 }  # referenced from 0x821AE204
+0x822937E0 = { end = 0x822937E8 }  # referenced from 0x821AF4E8
+0x82293838 = { end = 0x82293840 }  # referenced from 0x821AF4F4
+0x82295668 = { end = 0x82295670 }  # referenced from 0x821AEE58
+0x822A4C58 = { end = 0x822A4C60 }  # referenced from 0x821B06D8
+0x822BC888 = { end = 0x822BC890 }  # referenced from 0x821B1184
+0x822BCD98 = { end = 0x822BCDA0 }  # referenced from 0x821B11CC
+0x822BD180 = { end = 0x822BD1A0 }  # referenced from 0x821B11B8
+0x822BEC50 = { end = 0x822BEC58 }  # referenced from 0x821B1204
+0x822C1A40 = { end = 0x822C1A48 }  # referenced from 0x821B123C
+0x822C2860 = { end = 0x822C2868 }  # referenced from 0x821B125C
+0x822C2D28 = { end = 0x822C2D30 }  # referenced from 0x821B128C
+0x822C59C0 = { end = 0x822C59C8 }  # referenced from 0x821B13D4
+0x822C5ED0 = { end = 0x822C5ED8 }  # referenced from 0x821B13F4
+0x822C6AD0 = { end = 0x822C6AD8 }  # referenced from 0x821B1414
+0x822C8908 = { end = 0x822C8910 }  # referenced from 0x821B14B8
+0x822F47D0 = { end = 0x822F47E0 }  # referenced from 0x821B1B84
+0x82343F88 = { end = 0x82343F90 }  # referenced from 0x826F1E00
+0x823F8CB0 = { end = 0x823F8CB8 }  # referenced from 0x8200C49C
+0x823F93C0 = { end = 0x823F93D0 }  # referenced from 0x8200C4D8
+0x823FA2C0 = { end = 0x823FA308 }  # referenced from 0x8200C520
+0x823FDDE8 = { end = 0x823FDE0C }  # referenced from 0x8200C3A8
+0x823FDE30 = { end = 0x823FDE4C }  # referenced from 0x8200C39C
+0x82404900 = { end = 0x82404908 }  # referenced from 0x8200D700
+0x82404908 = { end = 0x82404910 }  # referenced from 0x8200D6D0
+0x82404920 = { end = 0x82404928 }  # referenced from 0x8200D6C4
+0x82404930 = { end = 0x82404938 }  # referenced from 0x8200D6B8
+0x82404948 = { end = 0x82404950 }  # referenced from 0x8200D6CC
+0x82404950 = { end = 0x82404958 }  # referenced from 0x8200D6A4
+0x82404958 = { end = 0x82404960 }  # referenced from 0x8200D6C0
+0x82405E88 = { end = 0x82405E90 }  # referenced from 0x8200D6B0
+0x82407350 = { end = 0x82407358 }  # referenced from 0x8200D808
+0x82407358 = { end = 0x82407360 }  # referenced from 0x8200D794
+0x82407360 = { end = 0x82407368 }  # referenced from 0x8200D7D8
+0x82407378 = { end = 0x82407380 }  # referenced from 0x8200D7CC
+0x82407388 = { end = 0x82407390 }  # referenced from 0x8200D79C
+0x82407390 = { end = 0x82407398 }  # referenced from 0x8200D7C0
+0x824073A8 = { end = 0x824073B0 }  # referenced from 0x8200D790
+0x824073B0 = { end = 0x824073B8 }  # referenced from 0x8200D7D4
+0x824073B8 = { end = 0x824073C0 }  # referenced from 0x8200D7AC
+0x824073C0 = { end = 0x824073C8 }  # referenced from 0x8200D7C8
+0x824073D8 = { end = 0x824073E0 }  # referenced from 0x8200D7BC
+0x824A8F68 = { end = 0x824A8F8C }  # referenced from 0x821AFD0C
+0x824C98F8 = { end = 0x824C9910 }  # referenced from 0x821AF450
+0x824C9910 = { end = 0x824C9928 }  # referenced from 0x821AF44C
+0x824FE6C0 = { end = 0x824FE6E0 }  # referenced from 0x8215EE0C
+0x82507E60 = { end = 0x82507E68 }  # referenced from 0x821ACD34
+0x825087C0 = { end = 0x825087C8 }  # referenced from 0x821AE838
+0x825598D8 = { end = 0x825598F8 }  # referenced from 0x821A7814
+0x825598F8 = { end = 0x82559918 }  # referenced from 0x821A7810
+0x8255C938 = { end = 0x8255C940 }  # referenced from 0x821AD058
+0x82593AF8 = { end = 0x82593B18 }  # referenced from 0x821ACC28
+0x825BA478 = { end = 0x825BA490 }  # referenced from 0x821ACBB0
+0x825E2358 = { end = 0x825E2360 }  # referenced from 0x821A790C
+0x825E2380 = { end = 0x825E23A0 }  # referenced from 0x821A7904
+0x825E23A0 = { end = 0x825E23C0 }  # referenced from 0x821A78FC
+0x825E23C0 = { end = 0x825E23C8 }  # referenced from 0x821A78F4
+0x8261CAE0 = { end = 0x8261CB00 }  # referenced from 0x821A9784
+0x826371B0 = { end = 0x826371D0 }  # referenced from 0x821A7884
+0x826371D0 = { end = 0x826371F0 }  # referenced from 0x821A787C
+0x826371F0 = { end = 0x82637210 }  # referenced from 0x821A7874
+0x826372F8 = { end = 0x82637318 }  # referenced from 0x821A7864
+0x82637338 = { end = 0x82637348 }  # referenced from 0x821A785C
+0x82637368 = { end = 0x826373A0 }  # referenced from 0x821A7844
+0x8263ED58 = { end = 0x8263ED78 }  # referenced from 0x821A8B88
+0x821E5EB8 = { end = 0x821E5ED8 }  # referenced from 0x821A7758
+0x821E6330 = { end = 0x821E6350 }  # referenced from 0x821A7694
+0x821E6398 = { end = 0x821E63B8 }  # referenced from 0x821A76A4
+0x821E6400 = { end = 0x821E6420 }  # referenced from 0x821A76B4
+0x82248AD0 = { end = 0x82248AD8 }  # referenced from 0x82248B70
+0x822FE7A8 = { end = 0x822FE7B8 }  # referenced from 0x822FE768
+0x823494B8 = { end = 0x823494D0 }  # referenced from 0x8234A2F4
+0x82637318 = { end = 0x82637338 }  # referenced from 0x821A7860
+0x82638820 = { end = 0x82638828 }  # referenced from 0x821F0D48
+0x821E6420 = { end = 0x821E6440 }  # referenced from 0x821A76B8
