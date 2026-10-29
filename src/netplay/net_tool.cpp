@@ -1,5 +1,5 @@
 ﻿// monopoly_net: join a hosted game as a remote player, or run a test-pattern host.
-//   monopoly_net --join <address>[:port] [--name <name>]
+//   monopoly_net --join <address>[:port] [--name <name>] [--slot <1-3>] [--wait <seconds>]
 //   monopoly_net --test-host [--port <port>] [--name <name>]
 #include <windows.h>
 #include <shellapi.h>
@@ -7,6 +7,8 @@
 #include <xinput.h>
 
 #include <atomic>
+#include <chrono>
+#include <memory>
 #include <cmath>
 #include <cstdio>
 #include <mutex>
@@ -136,6 +138,7 @@ HWND CreateMainWindow(const wchar_t* title) {
   wc.lpfnWndProc = WndProc;
   wc.hInstance = GetModuleHandleW(nullptr);
   wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hIcon = LoadIconW(wc.hInstance, MAKEINTRESOURCEW(1));
   wc.lpszClassName = kClassName;
   RegisterClassW(&wc);
   RECT rc{0, 0, 1280, 720};
@@ -172,14 +175,21 @@ void Fail(const std::string& message) {
 
 // ---- modes --------------------------------------------------------------------------------------
 
-int Join(std::string address, std::string name) {
+// wait_seconds > 0: the host's game is still starting (we came from a lobby), keep retrying.
+int Join(std::string address, std::string name, int wanted_slot, int wait_seconds) {
   uint16_t port = netplay::kDefaultPort;
-  // host:port, but leave bare IPv6 literals alone
-  if (auto colon = address.rfind(':'); colon != std::string::npos && address.find(':') == colon) {
+  // host:port or [ipv6]:port; a bare IPv6 literal uses the default port
+  if (address.starts_with('[')) {
+    size_t close = address.find(']');
+    if (close != std::string::npos && address.size() > close + 2 && address[close + 1] == ':')
+      port = uint16_t(std::stoi(address.substr(close + 2)));
+    address = address.substr(1, close == std::string::npos ? std::string::npos : close - 1);
+  } else if (auto colon = address.rfind(':'); colon != std::string::npos && address.find(':') == colon) {
     port = uint16_t(std::stoi(address.substr(colon + 1)));
     address.resize(colon);
   }
-  g_window = CreateMainWindow(L"Monopoly online - connecting...");
+  g_window = CreateMainWindow(wait_seconds ? L"Monopoly online - waiting for the host's game to start..."
+                                            : L"Monopoly online - connecting...");
   AudioOut audio;
   audio.Start();  // silent play is fine if there's no audio device
 
@@ -206,8 +216,18 @@ int Join(std::string address, std::string name) {
   };
 
   std::string error;
-  auto client = netplay::Client::Connect(address, port, name, cb, &error);
-  if (!client) return Fail(error), 1;
+  std::unique_ptr<netplay::Client> client;
+  auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(wait_seconds);
+  bool closed = false;
+  RunLoop(500, [&] {
+    client = netplay::Client::Connect(address, port, name, wanted_slot, cb, &error);
+    return !client && std::chrono::steady_clock::now() < give_up && error.starts_with("could not connect");
+  });
+  if (!client) {
+    MSG msg;  // the window may already be gone if the player closed it while waiting
+    closed = !IsWindow(g_window) || PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_NOREMOVE);
+    return closed ? 0 : (Fail(error), 1);
+  }
   RunLoop(8, [&] {
     if (lost) return Fail("Disconnected: " + lost_reason), false;
     client->SendInput(ReadLocalPad());
@@ -272,6 +292,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   wchar_t** wargv = CommandLineToArgvW(GetCommandLineW(), &argc);
   std::string mode, address, name = "Player";
   uint16_t port = netplay::kDefaultPort;
+  int slot = 0, wait = 0;
   for (int i = 1; i < argc; ++i) {
     char buf[512];
     WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, buf, sizeof(buf), nullptr, nullptr);
@@ -285,13 +306,15 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     else if (arg == "--test-host") mode = "host";
     else if (arg == "--port") port = uint16_t(std::stoi(next()));
     else if (arg == "--name") name = next();
+    else if (arg == "--slot") slot = std::atoi(next().c_str());
+    else if (arg == "--wait") wait = std::atoi(next().c_str());
   }
   LocalFree(wargv);
   CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-  if (mode == "join" && !address.empty()) return Join(address, name);
+  if (mode == "join" && !address.empty()) return Join(address, name, slot, wait);
   if (mode == "host") return TestHost(port, name);
   MessageBoxW(nullptr,
-              L"monopoly_net --join <address>[:port] [--name <name>]\n"
+              L"monopoly_net --join <address>[:port] [--name <name>] [--slot <1-3>] [--wait <seconds>]\n"
               L"monopoly_net --test-host [--port <port>] [--name <name>]",
               L"Monopoly online", MB_ICONINFORMATION);
   return 1;

@@ -8,5 +8,6 @@ REXCVAR_DEFINE_STRING(input_script, "", "Monopoly", "Replay timed controller pre
 REXCVAR_DEFINE_BOOL(net_host, false, "Online", "Host an online game: remote players join with monopoly_net");
 REXCVAR_DEFINE_INT32(net_port, 27360, "Online", "TCP port to host on (forward it on your router)");
 REXCVAR_DEFINE_STRING(net_name, "Host", "Online", "Your name in the online lobby");
+REXCVAR_DEFINE_STRING(net_lobby, "", "Online", "Game name shown to players looking for games on the local network");
 
 REX_DEFINE_APP(monopoly, MonopolyApp::Create)

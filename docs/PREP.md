@@ -7,7 +7,14 @@ Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, bui
 - **Playable.** Tested: Monopoly Edition (Classic board, 4 players, dice, buying, auctions, AI turns), Richest Edition (Developer mode, World board), the Go to Jail minigame, saves, and the VP6 FMVs. It runs at 60 fps. See `docs/milestone-board.png`.
 - **Online works end to end.** The game hosts with `--net_host`. A remote player using `monopoly_net.exe` (or `net_probe`) sees the game at about 28 fps with audio and controls their own player. In a test, a remote P2 set up their player, rolled, won the order roll, and started an auction over the network. See `docs/milestone-online.png`.
 - **Shaders are precompiled:** 55 shaders and 67 pipelines ship in `shader_cache/`, and all of them are created at startup.
-- Distributable folder: `tools\package.ps1` writes `dist\Monopoly` (43 MB, no game data). The player copies their disc files into `game\`.
+- Distributable folder: `tools\package.ps1` writes `dist\Monopoly` (44 MB, no game data). The player copies their disc files into `game\` and starts `MonopolyLauncher.exe`.
+- **Launcher** (`src/launcher`): Play / Host online / Join online / Settings, with an original house-and-die icon on every exe. It writes the game's own `monopoly.toml` (fullscreen, vsync, resolution scale, name, port), so settings also apply when `monopoly.exe` is started directly. Launcher-only state is in `launcher.toml`.
+- **Lobbies:**
+  - The host opens a lobby in the launcher. Friends join it, see the seats, chat and ready up, and the host starts the game.
+  - When the host starts, each friend's launcher starts `monopoly_net --slot <seat> --wait 90`, so they keep their lobby seat.
+  - Games on the local network are found automatically (UDP discovery on 27360). Internet joins use a join code (the host's IPv4 and port in 10 base-32 characters).
+  - The launcher can open the host's router port through UPnP, using its own SSDP/SOAP client.
+  - Public games are listed through a shared lobby directory server (`server/lobby_directory.py`), which also checks whether each host can be reached from the internet.
 
 ## Layout
 
@@ -17,6 +24,9 @@ Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, bui
 | `rexglue-sdk/` | ReXGlue v0.10.0 plus our fixes (`patches/rexglue-codegen-fixes.patch`). Installed to `rexglue-sdk/out/install/win-amd64`. `out/build` (409 MB) is kept for incremental SDK rebuilds. |
 | `port/` | the game: manifest, `config/monopoly.toml`, `src/` (app, netplay bridge, script input), `assets/shader_cache` (shipped storage), `generated/` (codegen output) |
 | `src/netplay/`, `tests/` | online transport (Host/Client, H.264 via Media Foundation), the self-test, the `net_probe` headless remote player, and the `monopoly_net` join client (top-level CMake project, `build/`) |
+| `src/launcher/` | `MonopolyLauncher.exe`: Dear ImGui on D3D9 fixed-function (no shaders), lobbies UI, UPnP client (`upnp.cpp`), lobby directory client (`directory.cpp`, WinHTTP) |
+| `src/netplay/lobby.*`, `wire.h` | lobby host/client protocol, LAN discovery, join codes; shared TCP framing |
+| `server/lobby_directory.py` | public lobby directory (Python stdlib only; `--self-test`) |
 | `tools/` | `env.cmd` (VS 2026 Build Tools + LLVM 23), `xiso.py`, `big.py`, `find_missing_funcs.py`/`fix_missing_funcs.ps1`, `run.ps1`, `live.ps1` + `nav.ps1` (drive a running game), `merge_shader_cache.py`, `warm_shader_cache.ps1`, `package.ps1` |
 
 ## Build and run
@@ -40,7 +50,9 @@ cd port
 ..\tools\env.cmd cmake --build --preset win-amd64-release
 cd ..
 tools\env.cmd cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl
-tools\env.cmd ninja -C build                                  # monopoly_net, net_probe, netplay_selftest
+tools\env.cmd ninja -C build                                  # launcher, monopoly_net, tests
+build\netplay_selftest && build\lobby_selftest && build\directory_selftest
+python -I server\lobby_directory.py --self-test
 tools\package.ps1
 ```
 
@@ -69,13 +81,19 @@ Unattended testing: `tools\live.ps1 start [-Extra ...]`, then `tools\nav.ps1 "A:
   - Players pick "Play With: Multiple" and the number of humans.
 - **Shader precompile = ship the storage observed during play.** Xenia's storage needs the pipeline state that goes with each shader, so raw ucode extracted from the XEX can't be pretranslated. To extend coverage, play new content, close normally, then run `tools\merge_shader_cache.py port\assets\shader_cache <user cache>` and rebuild.
 
+- **Launcher input:** ImGui navigation only moves sideways between items on the same row, so the sidebar is left out of keyboard/controller navigation. Pages switch with LB/RB or Ctrl+PgUp/PgDn, and the first press lands on each page's main button.
+- **UPnP:** Windows' NATUPnP needs the "SSDP Discovery" service, which is disabled on this PC, so the launcher has its own client. This router (MiniUPnPd 2.2.0) answers discovery but refuses `GetExternalIPAddress` (error 501). On networks like this, the join code comes from the address the lobby directory saw instead.
+- **Lobby directory:** one shared server that any always-on Python 3 machine can run. Its address is set in launcher Settings, or baked in with `cmake -DMONOPOLY_LOBBY_SERVER=...`. No default server is deployed yet, so the Public games list stays empty until one is set.
+
 ## Next steps
 
+0. Deploy `server/lobby_directory.py` somewhere always-on, then rebuild with `-DMONOPOLY_LOBBY_SERVER=<url>` so new launchers find it. Behind a reverse proxy, pass `--trust-proxy`.
 1. Widen shader coverage: other boards and minigames unlock with play. Industrialist/Tycoon modes and the Options and Credits screens aren't covered yet.
 2. Netplay polish:
-   - an in-game host/join overlay instead of CLI flags
+   - test a real internet game with real routers; so far only this PC has been used (loopback and LAN discovery)
+   - check the launcher's 2x/3x rendering resolution on the 3D board; only the menus have been checked at 2x
    - AAC audio, since PCM is about 1.5 Mbit/s per player
    - UDP or a relay for players who can't port-forward
    - a persistent readback ring in `FrameCapture` (`CaptureGuestOutput` allocates per frame)
-3. Remember window and fullscreen settings, and default the user data folder to %LOCALAPPDATA%\monopoly (the SDK default) instead of the dev folder.
+3. Remember the window size and position, and default the user data folder to %LOCALAPPDATA%\monopoly (the SDK default) instead of the dev folder.
 4. Port to Vulkan for Linux and Steam Deck if wanted (ReXGlue supports it).

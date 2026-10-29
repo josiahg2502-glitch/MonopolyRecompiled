@@ -8,10 +8,8 @@
 #include <mutex>
 #include <thread>
 
-#include <winsock2.h>
-#include <ws2tcpip.h>
-
 #include "video_codec.h"
+#include "wire.h"
 
 namespace netplay {
 namespace {
@@ -19,7 +17,7 @@ namespace {
 using Clock = std::chrono::steady_clock;
 
 enum class Msg : uint8_t {
-  kHello = 1,       // c->h: u32 version, name
+  kHello = 1,       // c->h: u32 version, u8 wanted slot (0 = any), name
   kWelcome = 2,     // h->c: u8 slot
   kReject = 3,      // h->c: reason
   kRoster = 4,      // h->c: per slot u8 connected, u8 len, name
@@ -29,81 +27,20 @@ enum class Msg : uint8_t {
   kKeyframeRequest = 8,
 };
 
-constexpr uint32_t kMaxMessage = 8u << 20;
 constexpr size_t kMaxQueuedBytes = 2u << 20;  // per client; beyond this video is dropped until a keyframe
 constexpr uint32_t kStreamFps = 30;
 constexpr uint32_t kStreamBitrate = 4'000'000;
 constexpr auto kInputResend = std::chrono::milliseconds(100);
 
-bool StartWinsock() {
-  static const bool ok = [] {
-    WSADATA data;
-    return WSAStartup(MAKEWORD(2, 2), &data) == 0;
-  }();
-  return ok;
-}
+using namespace wire;
 
-bool SendAll(SOCKET s, const void* data, size_t size) {
-  auto* p = static_cast<const char*>(data);
-  while (size) {
-    int n = send(s, p, int(std::min<size_t>(size, 1 << 20)), 0);
-    if (n <= 0) return false;
-    p += n, size -= size_t(n);
-  }
-  return true;
-}
-
-bool RecvAll(SOCKET s, void* data, size_t size) {
-  auto* p = static_cast<char*>(data);
-  while (size) {
-    int n = recv(s, p, int(std::min<size_t>(size, 1 << 20)), 0);
-    if (n <= 0) return false;
-    p += n, size -= size_t(n);
-  }
-  return true;
-}
-
-std::vector<uint8_t> Pack(Msg type, const void* payload, size_t size) {
-  std::vector<uint8_t> out(5 + size);
-  uint32_t len = uint32_t(size);
-  memcpy(out.data(), &len, 4);  // x86-64 only: little endian on the wire
-  out[4] = uint8_t(type);
-  if (size) memcpy(out.data() + 5, payload, size);
-  return out;
-}
+std::vector<uint8_t> Pack(Msg type, const void* payload, size_t size) { return wire::Pack(uint8_t(type), payload, size); }
 
 bool ReadMessage(SOCKET s, Msg* type, std::vector<uint8_t>* payload) {
-  uint8_t header[5];
-  if (!RecvAll(s, header, 5)) return false;
-  uint32_t len;
-  memcpy(&len, header, 4);
-  if (len > kMaxMessage) return false;
-  *type = Msg(header[4]);
-  payload->resize(len);
-  return len == 0 || RecvAll(s, payload->data(), len);
-}
-
-void SetNoDelay(SOCKET s) {
-  BOOL on = TRUE;
-  setsockopt(s, IPPROTO_TCP, TCP_NODELAY, reinterpret_cast<const char*>(&on), sizeof(on));
-  setsockopt(s, SOL_SOCKET, SO_KEEPALIVE, reinterpret_cast<const char*>(&on), sizeof(on));
-}
-
-// shutdown() alone doesn't wake a recv() blocked in another thread until the remote side closes.
-void Abort(SOCKET s) {
-  shutdown(s, SD_BOTH);
-  CancelIoEx(reinterpret_cast<HANDLE>(s), nullptr);
-}
-
-void SetRecvTimeout(SOCKET s, DWORD ms) {
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&ms), sizeof(ms));
-}
-
-std::string Sanitize(std::string name) {
-  if (name.size() > 32) name.resize(32);
-  for (char& c : name)
-    if (uint8_t(c) < 0x20) c = '?';
-  return name.empty() ? "Player" : name;
+  uint8_t t;
+  if (!wire::ReadMessage(s, &t, payload)) return false;
+  *type = Msg(t);
+  return true;
 }
 
 std::vector<uint8_t> PackRoster(const Roster& r) {
@@ -170,18 +107,8 @@ class HostImpl final : public Host {
     host_name_ = Sanitize(std::move(host_name));
     roster_.connected[0] = true;
     roster_.names[0] = host_name_;
-    listener_ = socket(AF_INET6, SOCK_STREAM, IPPROTO_TCP);
-    if (listener_ == INVALID_SOCKET) return *error = "socket() failed", false;
-    DWORD v6only = 0;  // dual stack: accept IPv4 and IPv6
-    setsockopt(listener_, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&v6only), sizeof(v6only));
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_port = htons(port);
-    addr.sin6_addr = in6addr_any;
-    if (bind(listener_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0 || listen(listener_, 4) != 0) {
-      *error = "could not listen on port " + std::to_string(port);
-      return false;
-    }
+    listener_ = Listen(port, error);
+    if (listener_ == INVALID_SOCKET) return false;
     acceptor_ = std::thread([this] { AcceptLoop(); });
     encoder_thread_ = std::thread([this] { EncodeLoop(); });
     return true;
@@ -265,20 +192,31 @@ class HostImpl final : public Host {
     Msg type;
     std::vector<uint8_t> payload;
     SetRecvTimeout(peer->socket, 5000);
-    if (!ReadMessage(peer->socket, &type, &payload) || type != Msg::kHello || payload.size() < 4) {
+    if (!ReadMessage(peer->socket, &type, &payload)) {
+      peer->dead = true;
+      return;
+    }
+    if (uint8_t(type) == kLobbyHello) {  // a launcher looking for a lobby: the game has already started
+      SendMsg(peer->socket, kLobbyReject, kInGameReason.data(), kInGameReason.size());
+      peer->dead = true;
+      return;
+    }
+    if (type != Msg::kHello || payload.size() < 5) {
       peer->dead = true;
       return;
     }
     SetRecvTimeout(peer->socket, 0);
     uint32_t version;
     memcpy(&version, payload.data(), 4);
-    std::string name = Sanitize(std::string(payload.begin() + 4, payload.end()));
+    int wanted = payload[4];  // the seat this player had in the lobby
+    std::string name = Sanitize(std::string(payload.begin() + 5, payload.end()));
     std::string reject;
     {
       std::lock_guard lock(state_mutex_);
       if (version != kProtocolVersion) {
         reject = "version mismatch";
       } else {
+        if (wanted > 0 && wanted < kMaxPlayers && !roster_.connected[wanted]) peer->slot = wanted;
         for (int i = 1; i < kMaxPlayers && !peer->slot; ++i)
           if (!roster_.connected[i]) peer->slot = i;
         if (!peer->slot) reject = "game is full";
@@ -449,31 +387,17 @@ class ClientImpl final : public Client {
     closesocket(socket_);
   }
 
-  bool Connect(const std::string& address, uint16_t port, std::string name, Callbacks callbacks,
+  bool Connect(const std::string& address, uint16_t port, std::string name, int wanted_slot, Callbacks callbacks,
                std::string* error) {
     callbacks_ = std::move(callbacks);
-    addrinfo hints{}, *list = nullptr;
-    hints.ai_family = AF_UNSPEC;
-    hints.ai_socktype = SOCK_STREAM;
-    hints.ai_protocol = IPPROTO_TCP;
-    if (getaddrinfo(address.c_str(), std::to_string(port).c_str(), &hints, &list) != 0)
-      return *error = "could not resolve " + address, false;
-    for (addrinfo* a = list; a && socket_ == INVALID_SOCKET; a = a->ai_next) {
-      SOCKET s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
-      if (s == INVALID_SOCKET) continue;
-      if (connect(s, a->ai_addr, int(a->ai_addrlen)) == 0)
-        socket_ = s;
-      else
-        closesocket(s);
-    }
-    freeaddrinfo(list);
-    if (socket_ == INVALID_SOCKET) return *error = "could not connect to " + address, false;
-    SetNoDelay(socket_);
+    socket_ = wire::Connect(address, port, error);
+    if (socket_ == INVALID_SOCKET) return false;
 
     name = Sanitize(std::move(name));
-    std::vector<uint8_t> hello(4 + name.size());
+    std::vector<uint8_t> hello(5 + name.size());
     memcpy(hello.data(), &kProtocolVersion, 4);
-    memcpy(hello.data() + 4, name.data(), name.size());
+    hello[4] = uint8_t(wanted_slot);
+    memcpy(hello.data() + 5, name.data(), name.size());
     auto msg = Pack(Msg::kHello, hello.data(), hello.size());
     if (!SendAll(socket_, msg.data(), msg.size())) return *error = "connection lost", false;
 
@@ -557,12 +481,13 @@ std::unique_ptr<Host> Host::Start(uint16_t port, std::string host_name, std::str
   return host->Start(port, std::move(host_name), error) ? std::move(host) : nullptr;
 }
 
-std::unique_ptr<Client> Client::Connect(const std::string& address, uint16_t port, std::string name,
+std::unique_ptr<Client> Client::Connect(const std::string& address, uint16_t port, std::string name, int wanted_slot,
                                         Callbacks callbacks, std::string* error) {
   if (!StartWinsock()) return *error = "WSAStartup failed", nullptr;
   auto client = std::make_unique<ClientImpl>();
-  return client->Connect(address, port, std::move(name), std::move(callbacks), error) ? std::move(client)
-                                                                                       : nullptr;
+  return client->Connect(address, port, std::move(name), wanted_slot, std::move(callbacks), error)
+             ? std::move(client)
+             : nullptr;
 }
 
 }  // namespace netplay

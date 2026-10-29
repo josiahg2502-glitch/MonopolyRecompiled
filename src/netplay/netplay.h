@@ -12,7 +12,7 @@ namespace netplay {
 
 constexpr int kMaxPlayers = 4;  // slot 0 is always the host
 constexpr uint16_t kDefaultPort = 27360;
-constexpr uint32_t kProtocolVersion = 1;
+constexpr uint32_t kProtocolVersion = 2;
 
 // Wire/API mirror of XINPUT_GAMEPAD (X_INPUT_GAMEPAD on the guest).
 struct Gamepad {
@@ -59,7 +59,8 @@ class Client {
     std::function<void(const std::string& reason)> on_disconnect;     // network thread
   };
 
-  static std::unique_ptr<Client> Connect(const std::string& address, uint16_t port, std::string name,
+  // wanted_slot: the seat this player had in the lobby (1..3), used if it's free; 0 = any.
+  static std::unique_ptr<Client> Connect(const std::string& address, uint16_t port, std::string name, int wanted_slot,
                                          Callbacks callbacks, std::string* error);
   virtual ~Client() = default;
 

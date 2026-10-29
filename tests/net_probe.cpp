@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
   };
   cb.on_audio = [&](const int16_t*, uint32_t n) { audio += n; };
   std::string error;
-  auto client = netplay::Client::Connect(argv[1], uint16_t(std::atoi(argv[2])), "Probe", cb, &error);
+  auto client = netplay::Client::Connect(argv[1], uint16_t(std::atoi(argv[2])), "Probe", 0, cb, &error);
   if (!client) return std::fprintf(stderr, "connect failed: %s\n", error.c_str()), 1;
   std::printf("joined as slot %d\n", client->slot());
 

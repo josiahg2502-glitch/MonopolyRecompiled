@@ -4,7 +4,9 @@
 
 #pragma once
 
+#include <chrono>
 #include <filesystem>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/filesystem.h>
@@ -12,6 +14,7 @@
 #include <rex/logging.h>
 #include <rex/rex_app.h>
 
+#include "netplay/lobby.h"
 #include "netplay_bridge.h"
 #include "script_input.h"
 
@@ -19,6 +22,7 @@ REXCVAR_DECLARE(std::string, input_script);
 REXCVAR_DECLARE(bool, net_host);
 REXCVAR_DECLARE(int32_t, net_port);
 REXCVAR_DECLARE(std::string, net_name);
+REXCVAR_DECLARE(std::string, net_lobby);
 
 class MonopolyApp : public rex::ReXApp {
  public:
@@ -57,13 +61,29 @@ class MonopolyApp : public rex::ReXApp {
 
     if (REXCVAR_GET(net_host)) {
       std::string error;
-      auto host = netplay::Host::Start(uint16_t(REXCVAR_GET(net_port)), REXCVAR_GET(net_name), &error);
+      std::shared_ptr<netplay::Host> host;
+      // Coming from a lobby, the launcher may still be releasing the port.
+      for (int attempt = 0; attempt < 20 && !host; ++attempt) {
+        if (attempt) std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        host = netplay::Host::Start(uint16_t(REXCVAR_GET(net_port)), REXCVAR_GET(net_name), &error);
+      }
       if (!host) {
         REXLOG_ERROR("online: could not host: {}", error);
       } else {
         REXLOG_INFO("online: hosting on port {}; players join with monopoly_net --join <this PC>",
                     REXCVAR_GET(net_port));
         host_ = std::move(host);
+        // Players on the local network see the game in their launcher's list (marked as started).
+        responder_ = netplay::DiscoveryResponder::Start([host = host_] {
+          netplay::LobbyInfo info;
+          auto roster = host->GetRoster();
+          for (bool c : roster.connected) info.players += c;
+          info.port = uint16_t(REXCVAR_GET(net_port));
+          info.host_name = roster.names[0];
+          info.lobby_name = REXCVAR_GET(net_lobby).empty() ? roster.names[0] + "'s game" : REXCVAR_GET(net_lobby);
+          info.in_game = true;
+          return info;
+        });
         config.audio_factory = [host = host_](rex::runtime::FunctionDispatcher* dispatcher)
             -> std::unique_ptr<rex::system::IAudioSystem> {
           return std::make_unique<monopoly::NetAudioSystem>(dispatcher, host);
@@ -92,5 +112,6 @@ class MonopolyApp : public rex::ReXApp {
 
  private:
   std::shared_ptr<netplay::Host> host_;
+  std::unique_ptr<netplay::DiscoveryResponder> responder_;
   std::unique_ptr<monopoly::FrameCapture> capture_;
 };

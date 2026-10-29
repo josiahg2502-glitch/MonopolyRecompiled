@@ -67,7 +67,7 @@ int main() {
     roster_count = n;
   };
 
-  auto c1 = netplay::Client::Connect("127.0.0.1", port, "Alice", cb, &error);
+  auto c1 = netplay::Client::Connect("127.0.0.1", port, "Alice", 0, cb, &error);
   if (!c1) std::fprintf(stderr, "%s\n", error.c_str());
   CHECK(c1 && c1->slot() == 1);
   STEP("connected");
@@ -114,18 +114,19 @@ int main() {
   CHECK(audio_frames >= 480 * 50);
   STEP("av");
 
-  auto c2 = netplay::Client::Connect("localhost", port, "Bob", {}, &error);
-  auto c3 = netplay::Client::Connect("127.0.0.1", port, "Carol", {}, &error);
-  CHECK(c2 && c2->slot() == 2 && c3 && c3->slot() == 3);
-  auto c4 = netplay::Client::Connect("127.0.0.1", port, "Dave", {}, &error);
+  // Bob had seat 3 in the lobby and keeps it; Carol takes the lowest free seat.
+  auto c2 = netplay::Client::Connect("localhost", port, "Bob", 3, {}, &error);
+  auto c3 = netplay::Client::Connect("127.0.0.1", port, "Carol", 3, {}, &error);
+  CHECK(c2 && c2->slot() == 3 && c3 && c3->slot() == 2);
+  auto c4 = netplay::Client::Connect("127.0.0.1", port, "Dave", 0, {}, &error);
   CHECK(!c4 && error.find("full") != std::string::npos);
   CHECK(WaitFor([&] { return roster_count == 4; }));
   STEP("full");
 
   c2.reset();
-  CHECK(WaitFor([&] { return !host->GetRoster().connected[2] && roster_count == 3; }));
-  auto c5 = netplay::Client::Connect("127.0.0.1", port, "Erin", {}, &error);
-  CHECK(c5 && c5->slot() == 2);
+  CHECK(WaitFor([&] { return !host->GetRoster().connected[3] && roster_count == 3; }));
+  auto c5 = netplay::Client::Connect("127.0.0.1", port, "Erin", 0, {}, &error);
+  CHECK(c5 && c5->slot() == 3);
   STEP("rejoin");
 
   std::atomic<bool> dropped{false};
@@ -133,7 +134,7 @@ int main() {
   cb6.on_disconnect = [&](const std::string&) { dropped = true; };
   c5.reset();
   STEP("c5 gone");
-  auto c6 = netplay::Client::Connect("127.0.0.1", port, "Finn", cb6, &error);
+  auto c6 = netplay::Client::Connect("127.0.0.1", port, "Finn", 0, cb6, &error);
   CHECK(c6);
   STEP("c6");
   host.reset();

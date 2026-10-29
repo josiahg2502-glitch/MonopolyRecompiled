@@ -1,0 +1,2 @@
+// Exe and window icon (SDL uses the exe's first icon for its window class).
+1 ICON "monopoly.ico"

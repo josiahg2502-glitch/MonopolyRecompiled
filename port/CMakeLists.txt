@@ -18,13 +18,14 @@ set(MONOPOLY_SOURCES
 )
 
 # Online play (shared with the monopoly_net join tool in the top-level project).
-add_library(netplay STATIC ../src/netplay/netplay.cpp ../src/netplay/video_codec.cpp)
+add_library(netplay STATIC ../src/netplay/netplay.cpp ../src/netplay/video_codec.cpp ../src/netplay/lobby.cpp)
 target_include_directories(netplay PUBLIC ../src)
 target_compile_definitions(netplay PUBLIC WIN32_LEAN_AND_MEAN NOMINMAX)
-target_link_libraries(netplay PUBLIC ws2_32 mfplat mfuuid wmcodecdspuuid ole32 oleaut32 strmiids)
+target_link_libraries(netplay PUBLIC ws2_32 iphlpapi mfplat mfuuid wmcodecdspuuid ole32 oleaut32 strmiids)
 
 if(WIN32)
-    add_executable(monopoly WIN32 ${MONOPOLY_SOURCES})
+    enable_language(RC)
+    add_executable(monopoly WIN32 ${MONOPOLY_SOURCES} assets/monopoly.rc)
 else()
     add_executable(monopoly ${MONOPOLY_SOURCES})
 endif()
