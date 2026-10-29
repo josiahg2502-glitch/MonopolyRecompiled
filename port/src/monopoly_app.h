@@ -73,8 +73,9 @@ class MonopolyApp : public rex::ReXApp {
         REXLOG_INFO("online: hosting on port {}; players join with monopoly_net --join <this PC>",
                     REXCVAR_GET(net_port));
         host_ = std::move(host);
-        // Players on the local network see the game in their launcher's list (marked as started).
-        responder_ = netplay::DiscoveryResponder::Start([host = host_] {
+        // Players see the game in their launcher's lists (marked as started): on the local network
+        // through discovery, and when browsing public games through a direct query.
+        auto describe = [host = host_.get()] {
           netplay::LobbyInfo info;
           auto roster = host->GetRoster();
           for (bool c : roster.connected) info.players += c;
@@ -83,7 +84,9 @@ class MonopolyApp : public rex::ReXApp {
           info.lobby_name = REXCVAR_GET(net_lobby).empty() ? roster.names[0] + "'s game" : REXCVAR_GET(net_lobby);
           info.in_game = true;
           return info;
-        });
+        };
+        responder_ = netplay::DiscoveryResponder::Start(describe);
+        host_->SetInfoReply([describe] { return netplay::EncodeLobbyInfo(describe()); });
         config.audio_factory = [host = host_](rex::runtime::FunctionDispatcher* dispatcher)
             -> std::unique_ptr<rex::system::IAudioSystem> {
           return std::make_unique<monopoly::NetAudioSystem>(dispatcher, host);

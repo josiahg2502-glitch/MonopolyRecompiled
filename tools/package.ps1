@@ -11,10 +11,9 @@ foreach ($f in "$bin\monopoly.exe", $net, $launcher) { if (!(Test-Path $f)) { th
 
 # Replace what we ship; keep the player's game files, settings and logs.
 if (Test-Path $Out) { Get-ChildItem $Out -Exclude game, monopoly.toml, launcher.toml, logs | Remove-Item -Recurse -Force }
-New-Item -ItemType Directory -Force "$Out\game", "$Out\server" | Out-Null
+New-Item -ItemType Directory -Force "$Out\game" | Out-Null
 Copy-Item "$bin\monopoly.exe", "$bin\*.dll", $net, $launcher, "$root\LICENSE", "$root\THIRD_PARTY_NOTICES.txt" $Out
 Copy-Item "$bin\shader_cache" $Out -Recurse
-Copy-Item "$root\server\lobby_directory.py" "$Out\server"
 
 @'
 Monopoly Recompiled - Monopoly (Xbox 360) for PC
@@ -40,10 +39,11 @@ ONLINE (up to 4 players)
   router to open it (UPnP); if your router doesn't allow that, forward it yourself.
 
 PUBLIC GAMES
-  The Public games list comes from a lobby server everyone shares. Run
-  server\lobby_directory.py (Python 3, nothing to install) on any always-on machine
-  reachable from the internet, for example: python3 lobby_directory.py --port 27380
-  Then enter its address (e.g. http://your-server:27380) in the launcher's Settings.
+  Anyone can host a public game: tick "List it in Public games" before opening the lobby.
+  No server is involved. Hosts announce themselves on the BitTorrent DHT, the public
+  peer-to-peer network torrent clients use to find each other (only addresses are
+  exchanged, never files), and players' launchers look them up there and ask each host
+  directly. Listing publicly shows your internet address to players looking for games.
 
 COMMAND LINE (optional)
   monopoly.exe [--fullscreen=false] [--net_host] [--net_port=27360] [--net_name=Alice]

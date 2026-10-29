@@ -85,6 +85,15 @@ class DiscoveryResponder {
 // Asks the local network (and this PC) who is hosting; waits `timeout` for answers.
 std::vector<LobbyInfo> FindLobbies(std::chrono::milliseconds timeout);
 
+// The LobbyInfo wire format shared by discovery answers and direct queries. Encoding stamps this
+// process's session; decoding rejects other versions of the lobby protocol.
+std::vector<uint8_t> EncodeLobbyInfo(const LobbyInfo& info);
+std::optional<LobbyInfo> DecodeLobbyInfo(const uint8_t* data, size_t size);
+
+// Asks the host at address:port directly (TCP) what it's hosting; nullopt if it doesn't answer in
+// time. Lobbies and running games both answer, so this also proves the host is reachable.
+std::optional<LobbyInfo> QueryLobby(const std::string& address, uint16_t port, std::chrono::milliseconds timeout);
+
 // ---- join codes ---------------------------------------------------------------------------------
 
 // A short code for an IPv4 address and port, e.g. "1C3KQ-7Y2MA", easier to pass around than an IP.

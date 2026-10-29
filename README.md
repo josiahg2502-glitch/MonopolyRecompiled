@@ -22,7 +22,7 @@ with Direct3D 12.
   - Games on your home network show up by themselves
   - Friends over the internet join with a short code
   - The launcher asks your router to open the game's port (UPnP)
-  - Optional public list, so anyone can find and join an open lobby
+  - Public games: anyone can host one and anyone can find it, with no server involved
 - **Rendering at 720p, 1440p or 4K** (2x and 3x are new and less tested)
 - **Precompiled shaders** for the boards and menus played so far, so those screens don't stutter while shaders
   compile on first use
@@ -71,16 +71,11 @@ open it; if your router doesn't allow that, forward the port to your PC yourself
 
 ### Public games
 
-The **Public games** list comes from a small lobby server that everyone shares. It's included in the release as
-`server/lobby_directory.py` (Python 3, nothing to install). Run it on any always-on machine reachable from the
-internet:
-
-```
-python3 lobby_directory.py --port 27380
-```
-
-Then put its address (for example `http://your-server:27380`) in the launcher's **Settings**. Behind a reverse
-proxy, add `--trust-proxy`. The server checks that each host can be reached from the internet before listing it.
+Anyone can host a public game: tick **List it in Public games** before opening the lobby. There's no server to
+run. Hosts announce themselves on the BitTorrent DHT, the public peer-to-peer network torrent clients use to find
+each other (only addresses are exchanged, never files). Players' launchers look them up there and ask each host
+directly what it's hosting, so the list only shows games they can actually reach. Listing a game publicly shows
+your internet address to players looking for games.
 
 ## Building
 

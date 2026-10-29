@@ -100,6 +100,7 @@ class LobbyHostImpl final : public LobbyHost {
     state_.lobby_name = Sanitize(std::move(lobby_name), 40, "Monopoly");
     state_.present[0] = state_.ready[0] = true;
     state_.names[0] = Sanitize(std::move(host_name));
+    port_ = port;
     listener_ = Listen(port, error);
     if (listener_ == INVALID_SOCKET) return false;
     acceptor_ = std::thread([this] { AcceptLoop(); });
@@ -226,7 +227,23 @@ class LobbyHostImpl final : public LobbyHost {
     uint8_t type;
     std::vector<uint8_t> payload;
     SetRecvTimeout(peer.socket, 5000);
-    if (!ReadMessage(peer.socket, &type, &payload) || type != kLobbyHello || payload.size() < 4) {
+    if (!ReadMessage(peer.socket, &type, &payload)) {
+      peer.dead = true;
+      return;
+    }
+    if (type == kInfoQuery) {  // someone browsing public games
+      auto st = State();
+      LobbyInfo info;
+      for (bool p : st.present) info.players += p;
+      info.port = port_;
+      info.lobby_name = st.lobby_name;
+      info.host_name = st.names[0];
+      auto bytes = EncodeLobbyInfo(info);
+      Send(peer, kInfoReply, bytes.data(), bytes.size());
+      peer.dead = true;
+      return;
+    }
+    if (type != kLobbyHello || payload.size() < 4) {
       peer.dead = true;
       return;
     }
@@ -291,6 +308,7 @@ class LobbyHostImpl final : public LobbyHost {
   }
 
   SOCKET listener_ = INVALID_SOCKET;
+  uint16_t port_ = 0;
   std::thread acceptor_;
   std::atomic<bool> stopped_{false}, starting_{false};
   std::mutex peers_mutex_;
@@ -402,8 +420,7 @@ class LobbyClientImpl final : public LobbyClient {
 };
 
 // ---------------------------------------------------------------------------------------------
-// Discovery: "MNPLY?" + u32 version asks; "MNPLY!" + u32 version, u32 session, u16 port, u8 players,
-// u8 in_game, str lobby name, str host name answers.
+// Discovery: "MNPLY?" + u32 version asks; "MNPLY!" + EncodeLobbyInfo answers.
 
 constexpr char kQuery[6] = {'M', 'N', 'P', 'L', 'Y', '?'};
 constexpr char kAnswer[6] = {'M', 'N', 'P', 'L', 'Y', '!'};
@@ -418,7 +435,6 @@ class DiscoveryResponderImpl final : public DiscoveryResponder {
 
   bool Start(std::function<LobbyInfo()> info) {
     info_ = std::move(info);
-    session_ = std::random_device{}();
     socket_ = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_ == INVALID_SOCKET) return false;
     BOOL on = TRUE;  // a lobby and a game on one PC both answer
@@ -440,16 +456,8 @@ class DiscoveryResponderImpl final : public DiscoveryResponder {
       int from_len = sizeof(from);
       int n = recvfrom(socket_, buf, sizeof(buf), 0, reinterpret_cast<sockaddr*>(&from), &from_len);
       if (n < 10 || memcmp(buf, kQuery, 6) != 0) continue;
-      LobbyInfo info = info_();
-      std::vector<uint8_t> out(kAnswer, kAnswer + 6);
-      auto put = [&](const void* p, size_t size) { out.insert(out.end(), (const uint8_t*)p, (const uint8_t*)p + size); };
-      put(&kLobbyVersion, 4);
-      put(&session_, 4);
-      put(&info.port, 2);
-      out.push_back(uint8_t(info.players));
-      out.push_back(info.in_game);
-      PutStr(out, info.lobby_name);
-      PutStr(out, info.host_name);
+      std::vector<uint8_t> out(kAnswer, kAnswer + 6), body = EncodeLobbyInfo(info_());
+      out.insert(out.end(), body.begin(), body.end());
       sendto(socket_, reinterpret_cast<const char*>(out.data()), int(out.size()), 0,
              reinterpret_cast<sockaddr*>(&from), from_len);
     }
@@ -457,7 +465,6 @@ class DiscoveryResponderImpl final : public DiscoveryResponder {
 
   SOCKET socket_ = INVALID_SOCKET;
   std::function<LobbyInfo()> info_;
-  uint32_t session_ = 0;
   std::thread thread_;
   std::atomic<bool> stopping_{false};
 };
@@ -546,19 +553,10 @@ std::vector<LobbyInfo> FindLobbies(std::chrono::milliseconds timeout) {
       if (WSAGetLastError() == WSAETIMEDOUT) break;
       continue;  // e.g. WSAECONNRESET from an unanswered loopback query
     }
-    std::vector<uint8_t> in(buf, buf + n);
-    uint32_t version;
-    LobbyInfo info;
-    if (n < 18 || memcmp(buf, kAnswer, 6) != 0) continue;
-    memcpy(&version, buf + 6, 4);
-    memcpy(&info.session, buf + 10, 4);
-    memcpy(&info.port, buf + 14, 2);
-    info.players = buf[16];
-    info.in_game = buf[17] != 0;
-    size_t p = 18;
-    if (version != kLobbyVersion || !GetStr(in, p, &info.lobby_name) || !GetStr(in, p, &info.host_name)) continue;
-    info.lobby_name = Sanitize(info.lobby_name, 40, "Monopoly");
-    info.host_name = Sanitize(info.host_name);
+    if (n < 6 || memcmp(buf, kAnswer, 6) != 0) continue;
+    auto decoded = DecodeLobbyInfo(buf + 6, size_t(n - 6));
+    if (!decoded) continue;
+    LobbyInfo info = *decoded;
     char text[INET_ADDRSTRLEN];
     info.address = inet_ntop(AF_INET, &from.sin_addr, text, sizeof(text)) ? text : "";
     bool loopback = (ntohl(from.sin_addr.s_addr) >> 24) == 127;
@@ -568,6 +566,64 @@ std::vector<LobbyInfo> FindLobbies(std::chrono::milliseconds timeout) {
   }
   closesocket(s);
   return found;
+}
+
+// ---- lobby info: u32 version, u32 session, u16 port, u8 players, u8 in_game, str lobby, str host ----
+
+namespace {
+uint32_t ProcessSession() {  // the same in every answer from this process, so routes can be merged
+  static const uint32_t session = std::random_device{}();
+  return session;
+}
+}  // namespace
+
+std::vector<uint8_t> EncodeLobbyInfo(const LobbyInfo& info) {
+  std::vector<uint8_t> out;
+  auto put = [&](const void* p, size_t n) {
+    out.insert(out.end(), static_cast<const uint8_t*>(p), static_cast<const uint8_t*>(p) + n);
+  };
+  uint32_t session = ProcessSession();
+  put(&kLobbyVersion, 4);
+  put(&session, 4);
+  put(&info.port, 2);
+  out.push_back(uint8_t(info.players));
+  out.push_back(info.in_game);
+  PutStr(out, info.lobby_name);
+  PutStr(out, info.host_name);
+  return out;
+}
+
+std::optional<LobbyInfo> DecodeLobbyInfo(const uint8_t* data, size_t size) {
+  if (size < 12) return std::nullopt;
+  uint32_t version;
+  LobbyInfo info;
+  memcpy(&version, data, 4);
+  memcpy(&info.session, data + 4, 4);
+  memcpy(&info.port, data + 8, 2);
+  info.players = std::min<int>(data[10], kMaxPlayers);
+  info.in_game = data[11] != 0;
+  std::vector<uint8_t> in(data, data + size);
+  size_t p = 12;
+  if (version != kLobbyVersion || !info.port || !GetStr(in, p, &info.lobby_name) || !GetStr(in, p, &info.host_name))
+    return std::nullopt;
+  info.lobby_name = Sanitize(info.lobby_name, 40, "Monopoly");
+  info.host_name = Sanitize(info.host_name);
+  return info;
+}
+
+std::optional<LobbyInfo> QueryLobby(const std::string& address, uint16_t port, std::chrono::milliseconds timeout) {
+  if (!StartWinsock()) return std::nullopt;
+  SOCKET s = ConnectWithin(address, port, DWORD(timeout.count()));
+  if (s == INVALID_SOCKET) return std::nullopt;
+  SetRecvTimeout(s, DWORD(timeout.count()));
+  uint8_t type;
+  std::vector<uint8_t> payload;
+  std::optional<LobbyInfo> info;
+  if (SendMsg(s, kInfoQuery, nullptr, 0) && ReadMessage(s, &type, &payload) && type == kInfoReply)
+    info = DecodeLobbyInfo(payload.data(), payload.size());
+  closesocket(s);
+  if (info) info->address = address;
+  return info;
 }
 
 // ---- join codes: 48 bits (IPv4, port) as 10 Crockford base32 digits ------------------------------

@@ -30,15 +30,9 @@
 #include "misc/cpp/imgui_stdlib.h"
 #include "netplay/lobby.h"
 #include "netplay/wire.h"
-#include "directory.h"
+#include "dht.h"
 #include "install.h"
 #include "upnp.h"
-
-// The public lobby directory launchers use unless the player picks another in Settings
-// (cmake -DMONOPOLY_LOBBY_SERVER=https://...). Empty: no public list until one is set.
-#ifndef MONOPOLY_LOBBY_SERVER
-#define MONOPOLY_LOBBY_SERVER ""
-#endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
@@ -205,9 +199,8 @@ struct Settings {
   std::string game_folder;  // empty: "game" next to the exe
   std::string join_address;
   std::string lobby_name;  // empty: "<name>'s game"
-  bool public_lobby = true;  // list hosted lobbies in the public directory
+  bool public_lobby = true;  // announce hosted lobbies in Public games
   bool upnp = true;          // ask the router to forward the port
-  std::string lobby_server;  // public lobby directory
   int page = 0;
 };
 
@@ -232,7 +225,6 @@ Settings LoadSettings() {
   s.lobby_name = SanitizeName(launcher.GetString("lobby_name", ""));
   s.public_lobby = launcher.GetBool("public_lobby", true);
   s.upnp = launcher.GetBool("upnp", true);
-  s.lobby_server = launcher.GetString("lobby_server", MONOPOLY_LOBBY_SERVER);
   s.page = std::clamp(launcher.GetInt("page", 0), 0, 3);
   return s;
 }
@@ -249,7 +241,6 @@ bool SaveSettings(const Settings& s) {
   launcher.SetString("lobby_name", s.lobby_name);
   launcher.SetBool("public_lobby", s.public_lobby);
   launcher.SetBool("upnp", s.upnp);
-  launcher.SetString("lobby_server", s.lobby_server);
   launcher.SetInt("page", s.page);
   return game.Save() && launcher.Save();
 }
@@ -493,9 +484,9 @@ struct Launcher {
   std::optional<RouterPort> router;
   uint16_t router_port = 0;  // nonzero while we hold (or are asking for) a router mapping
   std::string router_ip;     // the LAN address it points at
-  std::unique_ptr<PublicListing> listing;  // our lobby in the public list; kept while the game runs
-  Background<std::pair<std::vector<PublicLobby>, std::string>> fetching;
-  std::vector<PublicLobby> public_lobbies;
+  std::unique_ptr<PublicAnnouncer> announcer;  // our lobby in Public games; kept while the game runs
+  Background<std::pair<std::vector<netplay::LobbyInfo>, std::string>> fetching;
+  std::vector<netplay::LobbyInfo> public_lobbies;
   std::string public_error;
   double fetched_at = -100;
   int join_tab = 0;  // 0: public games, 1: on your network
@@ -539,16 +530,6 @@ struct Launcher {
   }
 
   bool InLobby() const { return lobby_host || lobby_client; }
-  ListingInfo ListingFor(const netplay::LobbyState& st, bool in_game = false) const {
-    ListingInfo info;
-    info.name = st.lobby_name;
-    info.host = st.names[0];
-    info.players = 0;
-    for (bool p : st.present) info.players += p;
-    info.in_game = in_game;
-    info.port = uint16_t(settings.port);
-    return info;
-  }
   std::string LobbyName() const { return settings.lobby_name.empty() ? settings.name + "'s game" : settings.lobby_name; }
 
   void Save() {
@@ -595,7 +576,7 @@ struct Launcher {
     GetExitCodeProcess(child, &code);
     CloseHandle(child);
     child = nullptr;
-    if (child_hosted) listing.reset(), ReleaseRouterPort();
+    if (child_hosted) announcer.reset(), ReleaseRouterPort();
     // monopoly_net reports its own errors (exit code 1) in a message box.
     if (code != 0 && (child_is_game || code != 1)) {
       char hex[16];
@@ -802,18 +783,14 @@ void Launcher::PageHost() {
   if (ImGui::IsItemDeactivatedAfterEdit()) Save();
 
   ImGui::Dummy(ImVec2(0, 2 * S));
-  bool have_server = !settings.lobby_server.empty();
-  bool listed = settings.public_lobby && have_server;
-  ImGui::BeginDisabled(!have_server);
-  if (ImGui::Checkbox("List it in Public games, so anyone can join", &listed)) settings.public_lobby = listed, Save();
-  ImGui::EndDisabled();
-  if (!have_server) ImGui::SameLine(), ImGui::TextColored(kMuted, "(add a lobby server in Settings)");
+  if (ImGui::Checkbox("List it in Public games, so anyone can find and join it", &settings.public_lobby)) Save();
   if (ImGui::Checkbox("Open the port on my router automatically (UPnP)", &settings.upnp)) Save();
 
   ImGui::Dummy(ImVec2(0, 4 * S));
   std::string port = std::to_string(settings.port);
   Muted(("Friends on your network see your game in their Join list. Over the internet, friends join with a code, "
-         "or anyone from Public games. That needs TCP port " + port +
+         "or anyone from Public games (which shows your internet address to players looking for games). "
+         "That needs TCP port " + port +
          " open on your router: the launcher asks the router for you, or forward it to this PC yourself.\n"
          "In the game, choose \"Play With: Multiple\" so every player gets their own controller.")
             .c_str());
@@ -841,13 +818,12 @@ void Launcher::PageJoin() {
   std::vector<Row> rows;
   std::string empty;
   if (join_tab == 0) {
-    for (auto& l : public_lobbies)  // hide games the internet can't reach, and other versions
-      if (l.version == netplay::kLobbyVersion && l.reachable != false)
-        rows.push_back({l.name, detail(l.host, l.players, l.in_game), {l.address, l.port}, l.players >= netplay::kMaxPlayers});
-    empty = settings.lobby_server.empty() ? "No lobby server is set, so there's no public list. Add one in Settings."
-            : !public_error.empty()       ? "Couldn't load public games: " + public_error + "."
-            : fetched_at < 0              ? "Looking for games..."
-                                          : "No public games right now. Host one and list it for everyone!";
+    for (auto& l : public_lobbies)  // every one of these answered just now, so it's reachable
+      rows.push_back({l.lobby_name, detail(l.host_name, l.players, l.in_game), {l.address, l.port},
+                      l.players >= netplay::kMaxPlayers});
+    empty = !public_error.empty() ? "Couldn't search for public games: " + public_error + "."
+            : fetched_at < 0      ? "Searching for public games (this takes a few seconds)..."
+                                  : "No public games right now. Host one and list it for everyone!";
   } else {
     for (auto& g : found)
       rows.push_back({g.lobby_name, detail(g.host_name, g.players, g.in_game), {g.address, g.port},
@@ -909,7 +885,6 @@ void Launcher::PageLobby() {
   bool all_ready = true;
   for (int i = 1; i < netplay::kMaxPlayers; ++i) all_ready &= !st.present[i] || st.ready[i];
 
-  if (listing) listing->Update(ListingFor(st));
   std::string subtitle = hosting ? "Your lobby is open. Start the game when everyone is ready."
                                  : "Hosted by " + st.names[0] + ". The host starts the game when everyone is ready.";
   Heading(st.lobby_name.empty() ? "Lobby" : st.lobby_name.c_str(), subtitle.c_str());
@@ -958,12 +933,11 @@ void Launcher::PageLobby() {
   if (hosting) {
     Label("Invite friends");
     std::string port = std::to_string(settings.port);
-    ListingStatus ls = listing ? listing->Status() : ListingStatus{};
-    // A join code needs our internet (IPv4) address: from the router, or as the lobby server saw us.
+    PublicAnnouncer::Status as = announcer ? announcer->GetStatus() : PublicAnnouncer::Status{};
+    // A join code needs our internet address: from the router, or as the peer-to-peer network saw us.
     std::string public_ip;
     if (router && !router->external_ip.empty() && !IsPrivateIPv4(router->external_ip)) public_ip = router->external_ip;
-    else if (!ls.address.empty() && ls.address.find(':') == std::string::npos && !IsPrivateIPv4(ls.address))
-      public_ip = ls.address;
+    else if (!as.external_ip.empty() && !IsPrivateIPv4(as.external_ip)) public_ip = as.external_ip;
     if (!public_ip.empty()) {
       std::string code = netplay::MakeJoinCode(public_ip, uint16_t(settings.port));
       ImGui::PushFont(bold, 22);
@@ -980,24 +954,23 @@ void Launcher::PageLobby() {
     bool double_nat = router && !router->external_ip.empty() && IsPrivateIPv4(router->external_ip);
     if (router_opening.Busy()) {
       Muted(("Asking your router to open port " + port + "...").c_str());
-    } else if (ls.reachable == true || (router_open && !public_ip.empty() && ls.reachable != false)) {
-      Muted(public_ip.empty() ? "Friends anywhere can reach your game." : "Friends anywhere can join with this code.");
-    } else if (router_open && double_nat && ls.reachable != false) {
+    } else if (router_open && !double_nat) {
+      Muted(("Port " + port + " is open on your router" +
+             (public_ip.empty() ? ". Send friends your public IP address to join with." : ": friends anywhere can join with this code."))
+                .c_str());
+    } else if (router_open) {
       Muted(("Your router opened port " + port + ", but it sits behind another router or your provider's network, "
              "so friends over the internet probably can't reach you.").c_str());
-    } else if (router_open && public_ip.empty()) {
-      Muted(("Your router opened port " + port + ". Send friends your public IP address to join with.").c_str());
     } else {
       std::string why = router && !router->error.empty() ? router->error + " " : "";
-      Muted((why + (ls.reachable == false ? "Friends over the internet can't reach you yet: " : "For friends over the internet, ") +
-             forward + (public_ip.empty() ? " and send them your public IP address." : "."))
+      Muted((why + "For friends over the internet, " + forward +
+             (public_ip.empty() ? " and send them your public IP address." : "."))
                 .c_str());
     }
-    if (listing) {
-      Muted(!ls.error.empty()           ? ("Couldn't list the game publicly: " + ls.error + ".").c_str()
-            : !ls.listed                ? "Listing the game in Public games..."
-            : ls.reachable == false     ? "Listed in Public games, but hidden until the internet can reach you."
-                                        : "Listed in Public games: anyone can join.");
+    if (announcer) {
+      Muted(!as.error.empty() && !as.announced ? ("Couldn't list the game publicly: " + as.error + ".").c_str()
+            : !as.announced                    ? "Listing the game in Public games..."
+                                               : "Listed in Public games: players who can reach your port can join.");
     }
     if (!lan.empty()) {
       ImGui::Dummy(ImVec2(0, 2 * S));
@@ -1105,18 +1078,6 @@ void Launcher::PageSettings() {
   }
 
   ImGui::Dummy(ImVec2(0, 10 * S));
-  Label("Public games");
-  ImGui::SetNextItemWidth(-FLT_MIN);
-  ImGui::InputTextWithHint("##server", "Lobby server, e.g. https://lobbies.example.org", &settings.lobby_server);
-  if (ImGui::IsItemDeactivatedAfterEdit()) {
-    auto& v = settings.lobby_server;
-    v.erase(0, v.find_first_not_of(" \t"));
-    v.erase(v.find_last_not_of(" \t/") + 1);
-    public_lobbies.clear(), public_error.clear(), fetched_at = -100, Save();
-  }
-  Muted("Where public games are listed. Everyone who wants to find each other's games uses the same server.");
-
-  ImGui::Dummy(ImVec2(0, 10 * S));
   Label("Troubleshooting");
   fs::path logs = ExeDir() / "logs";
   std::error_code ec;
@@ -1144,8 +1105,7 @@ void Launcher::OpenLobby() {
   notice.clear();
   chat_seen = 0;
   focus_page = ImGui::GetIO().NavVisible;  // controller: straight to "Start game"
-  if (settings.public_lobby && !settings.lobby_server.empty())
-    listing = std::make_unique<PublicListing>(settings.lobby_server, ListingFor(lobby_host->State()));
+  if (settings.public_lobby) announcer = std::make_unique<PublicAnnouncer>(port);
   lan = LanAddresses();
   if (lan.empty()) return;
   router.reset();
@@ -1182,7 +1142,7 @@ void Launcher::LeaveLobby() {
   responder.reset();  // reads lobby_host
   lobby_host.reset();
   lobby_client.reset();
-  listing.reset();
+  announcer.reset();
   ready = false;
   chat_input.clear();
   ReleaseRouterPort();
@@ -1194,8 +1154,9 @@ void Launcher::StartHostedGame() {
   responder.reset();
   lobby_host.reset();
   chat_input.clear();
-  if (listing) listing->Update(ListingFor(st, true));  // stays listed: late joiners go straight into the game
-  if (!Launch(L"monopoly.exe", GameArgs(true, st.lobby_name), true)) return listing.reset(), ReleaseRouterPort();
+  // The announcement stays up while the game runs: the game itself answers players browsing public
+  // games, and late joiners go straight into it.
+  if (!Launch(L"monopoly.exe", GameArgs(true, st.lobby_name), true)) return announcer.reset(), ReleaseRouterPort();
   child_hosted = true;
 }
 
@@ -1249,13 +1210,13 @@ void Launcher::PollOnline() {
     }
   }
   if (auto r = router_opening.Take()) router = std::move(*r);
-  if (settings.page == kJoin && !InLobby() && !settings.lobby_server.empty()) {  // and the public list
+  if (settings.page == kJoin && !InLobby()) {  // and public games, which take a few seconds to find
     if (auto r = fetching.Take()) {
       public_lobbies = std::move(r->first), public_error = std::move(r->second), fetched_at = ImGui::GetTime();
-    } else if (!fetching.Busy() && ImGui::GetTime() - fetched_at > 10) {
-      fetching.Run([server = settings.lobby_server] {
+    } else if (!fetching.Busy() && ImGui::GetTime() - fetched_at > 30) {
+      fetching.Run([] {
         std::string error;
-        auto lobbies = FetchPublicLobbies(server, &error);
+        auto lobbies = FindPublicLobbies(&error);
         return std::make_pair(std::move(lobbies), std::move(error));
       });
     }
@@ -1485,7 +1446,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show) {
     app.install->cancel = true;
     for (int i = 0; i < 100 && !app.install->finished; ++i) Sleep(50);
   }
-  for (int i = 0; i < 200 && (g_router_jobs || PendingListings()); ++i) Sleep(50);  // let the router and lobby server forget us
+  for (int i = 0; i < 200 && g_router_jobs; ++i) Sleep(50);  // let the router forget our port
   if (app.art) app.art->Release();
   ImGui_ImplDX9_Shutdown();
   ImGui_ImplWin32_Shutdown();

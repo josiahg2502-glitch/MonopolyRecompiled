@@ -152,6 +152,11 @@ class HostImpl final : public Host {
 
   int PeerCount() const override { return active_peers_; }
 
+  void SetInfoReply(std::function<std::vector<uint8_t>()> reply) override {
+    std::lock_guard lock(state_mutex_);
+    info_reply_ = std::move(reply);
+  }
+
  private:
   void AcceptLoop() {
     while (!stopping_) {
@@ -198,6 +203,17 @@ class HostImpl final : public Host {
     }
     if (uint8_t(type) == kLobbyHello) {  // a launcher looking for a lobby: the game has already started
       SendMsg(peer->socket, kLobbyReject, kInGameReason.data(), kInGameReason.size());
+      peer->dead = true;
+      return;
+    }
+    if (uint8_t(type) == kInfoQuery) {  // someone browsing public games
+      std::function<std::vector<uint8_t>()> reply;
+      {
+        std::lock_guard lock(state_mutex_);
+        reply = info_reply_;  // called outside the lock: it reads the roster
+      }
+      auto bytes = reply ? reply() : std::vector<uint8_t>{};
+      if (!bytes.empty()) SendMsg(peer->socket, kInfoReply, bytes.data(), bytes.size());
       peer->dead = true;
       return;
     }
@@ -366,6 +382,7 @@ class HostImpl final : public Host {
   std::mutex state_mutex_;
   Roster roster_;
   Gamepad pads_[kMaxPlayers];
+  std::function<std::vector<uint8_t>()> info_reply_;
 
   std::mutex encode_mutex_;
   std::condition_variable encode_cv_;

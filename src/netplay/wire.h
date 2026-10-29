@@ -18,6 +18,10 @@ namespace netplay::wire {
 constexpr uint8_t kLobbyHello = 20;
 constexpr uint8_t kLobbyReject = 22;
 inline const std::string kInGameReason = "in game";
+// "What are you hosting?" as a first message, answered by lobbies and running games alike with a
+// LobbyInfo (see EncodeLobbyInfo); how players browsing public games check each host directly.
+constexpr uint8_t kInfoQuery = 27;
+constexpr uint8_t kInfoReply = 28;
 
 constexpr uint32_t kMaxMessage = 8u << 20;
 
@@ -114,6 +118,40 @@ inline SOCKET Listen(uint16_t port, std::string* error) {
     return INVALID_SOCKET;
   }
   return s;
+}
+
+// Like Connect, but gives up after `timeout_ms` per address instead of the OS's ~20 s.
+inline SOCKET ConnectWithin(const std::string& address, uint16_t port, DWORD timeout_ms) {
+  addrinfo hints{}, *list = nullptr;
+  hints.ai_family = AF_UNSPEC;
+  hints.ai_socktype = SOCK_STREAM;
+  hints.ai_protocol = IPPROTO_TCP;
+  if (getaddrinfo(address.c_str(), std::to_string(port).c_str(), &hints, &list) != 0) return INVALID_SOCKET;
+  SOCKET out = INVALID_SOCKET;
+  for (addrinfo* a = list; a && out == INVALID_SOCKET; a = a->ai_next) {
+    SOCKET s = socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+    if (s == INVALID_SOCKET) continue;
+    u_long nonblocking = 1;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+    bool ok = connect(s, a->ai_addr, int(a->ai_addrlen)) == 0;
+    if (!ok && WSAGetLastError() == WSAEWOULDBLOCK) {
+      fd_set w, e;
+      FD_ZERO(&w);
+      FD_ZERO(&e);
+      FD_SET(s, &w);  // statement macros
+      FD_SET(s, &e);
+      timeval tv{LONG(timeout_ms / 1000), LONG(timeout_ms % 1000 * 1000)};
+      int err = 0, len = sizeof(err);
+      ok = select(0, nullptr, &w, &e, &tv) == 1 && FD_ISSET(s, &w) &&
+           getsockopt(s, SOL_SOCKET, SO_ERROR, reinterpret_cast<char*>(&err), &len) == 0 && err == 0;
+    }
+    nonblocking = 0;
+    ioctlsocket(s, FIONBIO, &nonblocking);
+    if (ok) out = s;
+    else closesocket(s);
+  }
+  freeaddrinfo(list);
+  return out;
 }
 
 inline SOCKET Connect(const std::string& address, uint16_t port, std::string* error) {

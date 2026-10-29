@@ -48,6 +48,9 @@ class Host {
   virtual Roster GetRoster() = 0;
   // Remote players currently connected; capture work can be skipped while it's 0.
   virtual int PeerCount() const = 0;
+  // Answers "what are you hosting?" queries from players browsing public games (bytes from
+  // EncodeLobbyInfo in lobby.h).
+  virtual void SetInfoReply(std::function<std::vector<uint8_t>()> reply) = 0;
 };
 
 class Client {

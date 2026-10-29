@@ -14,11 +14,11 @@ Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, bui
   - When the host starts, each friend's launcher starts `monopoly_net --slot <seat> --wait 90`, so they keep their lobby seat.
   - Games on the local network are found automatically (UDP discovery on 27360). Internet joins use a join code (the host's IPv4 and port in 10 base-32 characters).
   - The launcher can open the host's router port through UPnP, using its own SSDP/SOAP client.
-  - Public games are listed through a shared lobby directory server (`server/lobby_directory.py`), which also checks whether each host can be reached from the internet.
+  - Public games use no server. Hosts announce themselves in the BitTorrent mainline DHT (BEP 5) under a key only this port uses (SHA-1 of "MonopolyRecompiled public lobbies v1"). Browsers look the key up, then ask each host directly over TCP (`kInfoQuery`, answered by both lobbies and running games). That also proves the host is reachable. The DHT reports our internet address back (BEP 42), which feeds the join code.
 
 ## Release
 
-- v1.0.0: `tools\package.ps1 -Zip` writes `dist\MonopolyRecompiled.zip` (14 MB: launcher, game, join client, shader cache, lobby server, LICENSE, THIRD_PARTY_NOTICES.txt; no game data). The launcher installs the game from the player's own .iso (title ID checked, files written under a temporary name first).
+- v1.0.0: `tools\package.ps1 -Zip` writes `dist\MonopolyRecompiled.zip` (14 MB: launcher, game, join client, shader cache, LICENSE, THIRD_PARTY_NOTICES.txt; no game data). The launcher installs the game from the player's own .iso (title ID checked, files written under a temporary name first).
 - Repo: github.com/josiahg2502-glitch/MonopolyRecompiled (GPL-3.0, like the other ports).
 
 ## Layout
@@ -29,9 +29,8 @@ Static recompilation of Monopoly (USA, Europe), 2008, EA, title ID 4541086F, bui
 | `rexglue-sdk/` | ReXGlue v0.10.0 plus our fixes (`patches/rexglue-codegen-fixes.patch`). Installed to `rexglue-sdk/out/install/win-amd64`. `out/build` (409 MB) is kept for incremental SDK rebuilds. |
 | `port/` | the game: manifest, `config/monopoly.toml`, `src/` (app, netplay bridge, script input), `assets/shader_cache` (shipped storage), `generated/` (codegen output) |
 | `src/netplay/`, `tests/` | online transport (Host/Client, H.264 via Media Foundation), the self-test, the `net_probe` headless remote player, and the `monopoly_net` join client (top-level CMake project, `build/`) |
-| `src/launcher/` | `MonopolyLauncher.exe`: Dear ImGui on D3D9 fixed-function (no shaders), lobbies UI, UPnP client (`upnp.cpp`), lobby directory client (`directory.cpp`, WinHTTP) |
+| `src/launcher/` | `MonopolyLauncher.exe`: Dear ImGui on D3D9 fixed-function (no shaders), lobbies UI, UPnP client (`upnp.cpp`), DHT client for public games (`dht.cpp`), disc image installer (`install.cpp`) |
 | `src/netplay/lobby.*`, `wire.h` | lobby host/client protocol, LAN discovery, join codes; shared TCP framing |
-| `server/lobby_directory.py` | public lobby directory (Python stdlib only; `--self-test`) |
 | `tools/` | `env.cmd` (VS 2026 Build Tools + LLVM 23), `xiso.py`, `big.py`, `find_missing_funcs.py`/`fix_missing_funcs.ps1`, `run.ps1`, `live.ps1` + `nav.ps1` (drive a running game), `merge_shader_cache.py`, `warm_shader_cache.ps1`, `package.ps1` |
 
 ## Build and run
@@ -56,8 +55,8 @@ cd port
 cd ..
 tools\env.cmd cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang-cl
 tools\env.cmd ninja -C build                                  # launcher, monopoly_net, tests
-build\netplay_selftest && build\lobby_selftest && build\directory_selftest
-python -I server\lobby_directory.py --self-test
+build\netplay_selftest && build\lobby_selftest && build\install_selftest
+build\dht_selftest                                           # talks to the live DHT (test-only key)
 tools\package.ps1
 ```
 
@@ -87,12 +86,11 @@ Unattended testing: `tools\live.ps1 start [-Extra ...]`, then `tools\nav.ps1 "A:
 - **Shader precompile = ship the storage observed during play.** Xenia's storage needs the pipeline state that goes with each shader, so raw ucode extracted from the XEX can't be pretranslated. To extend coverage, play new content, close normally, then run `tools\merge_shader_cache.py port\assets\shader_cache <user cache>` and rebuild.
 
 - **Launcher input:** ImGui navigation only moves sideways between items on the same row, so the sidebar is left out of keyboard/controller navigation. Pages switch with LB/RB or Ctrl+PgUp/PgDn, and the first press lands on each page's main button.
-- **UPnP:** Windows' NATUPnP needs the "SSDP Discovery" service, which is disabled on this PC, so the launcher has its own client. This router (MiniUPnPd 2.2.0) answers discovery but refuses `GetExternalIPAddress` (error 501). On networks like this, the join code comes from the address the lobby directory saw instead.
-- **Lobby directory:** one shared server that any always-on Python 3 machine can run. Its address is set in launcher Settings, or baked in with `cmake -DMONOPOLY_LOBBY_SERVER=...`. No default server is deployed yet, so the Public games list stays empty until one is set.
+- **UPnP:** Windows' NATUPnP needs the "SSDP Discovery" service, which is disabled on this PC, so the launcher has its own client. This router (MiniUPnPd 2.2.0) answers discovery but refuses `GetExternalIPAddress` (error 501). On networks like this, the join code comes from the address the DHT reports instead.
+- **Public games without a server:** a lobby directory server was built first and then dropped, because the user wants anyone to be able to host without someone running an always-on machine. It is in git history (0164984). DHT entries can't be withdrawn and expire after about 30 minutes; browsers only show hosts that answer, so stale entries never appear. Hosts on the same public IP as the browser are also tried on loopback, because routers often don't hairpin.
 
 ## Next steps
 
-0. Deploy `server/lobby_directory.py` somewhere always-on, then rebuild with `-DMONOPOLY_LOBBY_SERVER=<url>` so new launchers find it. Behind a reverse proxy, pass `--trust-proxy`.
 1. Widen shader coverage: other boards and minigames unlock with play. Industrialist/Tycoon modes and the Options and Credits screens aren't covered yet.
 2. Netplay polish:
    - test a real internet game with real routers; so far only this PC has been used (loopback and LAN discovery)

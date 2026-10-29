@@ -104,6 +104,13 @@ int main() {
   std::printf("discovery: %zu lobby(s), first at %s\n", found.size(), found.empty() ? "-" : found[0].address.c_str());
   responder.reset();
 
+  // Asking the lobby directly, as players browsing public games do.
+  auto asked = netplay::QueryLobby("127.0.0.1", port, 2000ms);
+  CHECK(asked && asked->lobby_name == "Test lobby" && asked->host_name == "Hostie" && asked->players == 3 &&
+        !asked->in_game && asked->port == port);
+  CHECK(!netplay::QueryLobby("127.0.0.1", 1, 500ms));  // nobody there: fails fast
+  CHECK(Present(host->State()) == 3);                  // the query didn't take a seat
+
   // Start: clients are told, hang up, and the port is free for the game right away.
   std::thread starter([&] { host->StartGame(); });
   CHECK(WaitFor([&] { return a->GetStatus(nullptr) == netplay::LobbyClient::Status::kStarting; }));
@@ -119,6 +126,17 @@ int main() {
   // A launcher that reaches a running game is told to use the stream client.
   auto late = netplay::LobbyClient::Connect("127.0.0.1", port, "Late", &error);
   CHECK(!late && error == netplay::wire::kInGameReason);
+  game->SetInfoReply([] {
+    netplay::LobbyInfo info;
+    info.port = port;
+    info.lobby_name = "Test lobby";
+    info.host_name = "Hostie";
+    info.players = 2;
+    info.in_game = true;
+    return netplay::EncodeLobbyInfo(info);
+  });
+  auto playing = netplay::QueryLobby("127.0.0.1", port, 2000ms);
+  CHECK(playing && playing->in_game && playing->players == 2);
   host.reset();
 
   std::printf("lobby selftest passed\n");
